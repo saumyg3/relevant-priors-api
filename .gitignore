@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+app/model.json
+public_eval.json
+*.zip
