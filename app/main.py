@@ -52,7 +52,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .features import normalize, days_between, extract_pair_features
+from .features import extract_pair_features
 from .scoring import Scorer, load_scorer
 
 logging.basicConfig(
@@ -120,39 +120,18 @@ def _days_bucket(days: Optional[int]) -> int:
     return 30 + d // 180       # half-year
 
 
-@lru_cache(maxsize=50_000)
+@lru_cache(maxsize=100_000)
 def _cached_predict(
-    current_norm: str,
-    prior_norm: str,
-    days_bucket: int,
+    current_desc: str,
+    current_date: Optional[str],
+    prior_desc: str,
+    prior_date: Optional[str],
 ) -> bool:
-    """Cache-friendly wrapper. The bucketed days key means retried or
-    repeated pairs hit cache even if the exact date differs by a day."""
-    # Reconstruct approximate dates for feature extraction. The bucket
-    # alone is not quite enough; we pick a representative delta inside
-    # the bucket. Since is_recent / is_very_recent are step functions,
-    # using the bucket midpoint preserves those thresholds.
-    if days_bucket == -1:
-        cur_date, pri_date = None, None
-    else:
-        # Use a stable representative day count.
-        # Buckets 0..4  -> weeks 0..4    (0, 7, 14, 21, 28 days)
-        # Buckets 10..22 -> months 0..12 (0..360 days)
-        # Buckets 30+   -> half-years    (>=360 days)
-        if days_bucket < 10:
-            days = days_bucket * 7
-        elif days_bucket < 30:
-            days = (days_bucket - 10) * 30
-        else:
-            days = (days_bucket - 30) * 180
-        # Feed the feature extractor a synthetic pair of dates with the
-        # right delta. We use a fixed anchor and walk backward.
-        cur_date = "2026-01-01"
-        # Build a date that many days earlier.
-        from datetime import date, timedelta
-        pri_date = (date(2026, 1, 1) - timedelta(days=max(days, 0))).isoformat()
-
-    feats = extract_pair_features(current_norm.strip(), cur_date, prior_norm.strip(), pri_date)
+    """Single source of truth for pair scoring. Cached on raw inputs
+    so identical pairs (very common across retries and repeated
+    description strings) return immediately without re-extracting
+    features or running the linear model."""
+    feats = extract_pair_features(current_desc, current_date, prior_desc, prior_date)
     is_rel, _ = SCORER.predict(feats)
     return bool(is_rel)
 
@@ -163,27 +142,7 @@ def predict_pair(
     prior_desc: str,
     prior_date: Optional[str],
 ) -> bool:
-    """Public entry that combines real-date features with cache lookup.
-
-    We compute the accurate, non-bucketed features for the actual dates
-    first. Cache is a fast-path for repeated (desc, desc, bucket) triples.
-    Using only the bucketed cache would cost a little accuracy at bucket
-    boundaries; doing the real compute and then writing to cache is
-    slightly redundant but keeps scoring exact.
-    """
-    feats = extract_pair_features(current_desc, current_date, prior_desc, prior_date)
-    is_rel, _ = SCORER.predict(feats)
-
-    # Warm cache for retries.
-    cn = normalize(current_desc)
-    pn = normalize(prior_desc)
-    bucket = _days_bucket(days_between(current_date, prior_date))
-    try:
-        _cached_predict(cn, pn, bucket)
-    except Exception:  # cache failures must never break scoring
-        pass
-
-    return bool(is_rel)
+    return _cached_predict(current_desc, current_date, prior_desc, prior_date)
 
 
 # -----------------------------------------------------------------------------

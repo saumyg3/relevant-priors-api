@@ -39,7 +39,7 @@ def main():
     confusion: Counter[tuple[int, int]] = Counter()
     mistakes: list[dict] = []
 
-    for cur_desc, cur_date, pri_desc, pri_date, label in iter_labeled_pairs(blob, args.label_key):
+    for _case_id, cur_desc, cur_date, pri_desc, pri_date, label in iter_labeled_pairs(blob, args.label_key):
         feats = extract_pair_features(cur_desc, cur_date, pri_desc, pri_date)
         pred, prob = scorer.predict(feats)
         y = 1 if label else 0

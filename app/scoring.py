@@ -65,6 +65,8 @@ ZERO_SHOT_WEIGHTS: Mapping[str, float] = {
     "is_stale_5y":           -0.2,
     "missing_date":           0.0,
     "prior_desc_len_scaled":  0.0,
+    "laterality_conflict":   -1.2,
+    "laterality_match":       0.4,
 }
 ZERO_SHOT_INTERCEPT = -0.8
 ZERO_SHOT_THRESHOLD = 0.5

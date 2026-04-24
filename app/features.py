@@ -119,6 +119,22 @@ def extract_regions(text: str) -> set[str]:
     return regions
 
 
+def extract_laterality(text: str) -> str:
+    """Return 'L', 'R', 'B' (bilateral), or 'U' (unknown)."""
+    t = normalize(text)
+    # Check bilateral first — 'BILAT' appearing means both sides.
+    if ' BILAT' in t or ' BILATERAL' in t or ' BI ' in t or ' BOTH ' in t:
+        return 'B'
+    # Left/right with word boundaries via padding
+    has_l = ' LT ' in t or ' LEFT ' in t or ' L ' in t
+    has_r = ' RT ' in t or ' RIGHT ' in t or ' R ' in t
+    if has_l and not has_r:
+        return 'L'
+    if has_r and not has_l:
+        return 'R'
+    return 'U'
+
+
 def extract_contexts(text: str) -> set[str]:
     t = normalize(text)
     ctx: set[str] = set()
@@ -172,6 +188,8 @@ class PairFeatures:
     is_stale: int                   # 1 if |delta| > 365 * 5
     missing_date: int               # 1 if either date unparseable
     prior_desc_len: int             # crude complexity signal
+    laterality_conflict: int        # 1 if one side L and other R (never both in same body part)
+    laterality_match: int           # 1 if both sides identified and equal
 
     def to_vector(self) -> list[float]:
         return [
@@ -189,6 +207,8 @@ class PairFeatures:
             float(self.is_stale),
             float(self.missing_date),
             float(self.prior_desc_len) / 50.0,
+            float(self.laterality_conflict),
+            float(self.laterality_match),
         ]
 
     @staticmethod
@@ -208,6 +228,8 @@ class PairFeatures:
             "is_stale_5y",
             "missing_date",
             "prior_desc_len_scaled",
+            "laterality_conflict",
+            "laterality_match",
         ]
 
 
@@ -236,9 +258,19 @@ def extract_pair_features(
         or ("NOCONTRAST" in cur_ctx and "CONTRAST" in pri_ctx)
     )
 
+    cur_lat = extract_laterality(current_desc)
+    pri_lat = extract_laterality(prior_desc)
+    lat_conflict = int(
+        (cur_lat == 'L' and pri_lat == 'R') or (cur_lat == 'R' and pri_lat == 'L')
+    )
+    lat_match = int(cur_lat in ('L', 'R', 'B') and cur_lat == pri_lat)
+
     delta = days_between(current_date, prior_date)
-    abs_delta = abs(delta) if delta is not None else 0
     missing = 1 if delta is None else 0
+    abs_delta = abs(delta) if delta is not None else 0
+    # Gate recency flags on having a real date — otherwise a missing
+    # date would incorrectly register as 'very recent' (0 days old).
+    has_date = 0 if missing else 1
 
     return PairFeatures(
         exact_desc_match=int(cur_norm == pri_norm),
@@ -250,9 +282,11 @@ def extract_pair_features(
         context_overlap=len(cur_ctx & pri_ctx),
         contrast_conflict=contrast_conflict,
         days_delta=abs_delta,
-        is_recent=int(abs_delta <= 365),
-        is_very_recent=int(abs_delta <= 90),
-        is_stale=int(abs_delta > 365 * 5),
+        is_recent=int(has_date and abs_delta <= 365),
+        is_very_recent=int(has_date and abs_delta <= 90),
+        is_stale=int(has_date and abs_delta > 365 * 5),
         missing_date=missing,
         prior_desc_len=len(prior_desc or ""),
+        laterality_conflict=lat_conflict,
+        laterality_match=lat_match,
     )

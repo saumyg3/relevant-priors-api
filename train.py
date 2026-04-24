@@ -64,7 +64,7 @@ LABEL_KEYS_TRIED = ("is_relevant", "label", "relevant", "gold", "y", "target")
 
 
 def iter_labeled_pairs(blob: dict, label_key: str | None = None):
-    """Yield (current_desc, current_date, prior_desc, prior_date, label) tuples.
+    """Yield (case_id, current_desc, current_date, prior_desc, prior_date, label) tuples.
 
     Supports both Shape A (label on each prior) and Shape B (parallel
     labels array keyed by (case_id, study_id)).
@@ -122,18 +122,19 @@ def iter_labeled_pairs(blob: dict, label_key: str | None = None):
             if label is None:
                 continue  # unlabeled — skip for training
 
-            yield cur_desc, cur_date, pri_desc, pri_date, label
+            yield case_id, cur_desc, cur_date, pri_desc, pri_date, label
 
 
 def build_dataset(path: str, label_key: str | None):
     with open(path, "r") as f:
         blob = json.load(f)
 
-    X, y = [], []
-    for cur_desc, cur_date, pri_desc, pri_date, label in iter_labeled_pairs(blob, label_key):
+    X, y, groups = [], [], []
+    for case_id, cur_desc, cur_date, pri_desc, pri_date, label in iter_labeled_pairs(blob, label_key):
         feats = extract_pair_features(cur_desc, cur_date, pri_desc, pri_date)
         X.append(feats.to_vector())
         y.append(1 if label else 0)
+        groups.append(case_id)
 
     if not X:
         print(
@@ -143,19 +144,31 @@ def build_dataset(path: str, label_key: str | None):
         )
         sys.exit(2)
 
-    return X, y
+    return X, y, groups
 
 
 # -----------------------------------------------------------------------------
 # Training
 # -----------------------------------------------------------------------------
 
-def split(X, y, frac: float = 0.2, seed: int = 13):
+def split(X, y, groups=None, frac: float = 0.2, seed: int = 13):
+    """Split train/val. If groups (e.g. case_ids) are given, ensures no
+    group appears in both train and val — required to avoid leakage when
+    multiple rows share the same case/patient."""
     rng = random.Random(seed)
-    idx = list(range(len(X)))
-    rng.shuffle(idx)
-    cut = int(len(idx) * (1 - frac))
-    tr, va = idx[:cut], idx[cut:]
+    if groups is None:
+        idx = list(range(len(X)))
+        rng.shuffle(idx)
+        cut = int(len(idx) * (1 - frac))
+        tr, va = idx[:cut], idx[cut:]
+    else:
+        unique = list(set(groups))
+        rng.shuffle(unique)
+        cut = int(len(unique) * (1 - frac))
+        val_groups = set(unique[cut:])
+        tr, va = [], []
+        for i, g in enumerate(groups):
+            (va if g in val_groups else tr).append(i)
     return (
         [X[i] for i in tr], [y[i] for i in tr],
         [X[i] for i in va], [y[i] for i in va],
@@ -188,11 +201,12 @@ def main():
     args = ap.parse_args()
 
     print(f"Loading {args.data} ...")
-    X, y = build_dataset(args.data, args.label_key)
+    X, y, groups = build_dataset(args.data, args.label_key)
     pos = sum(y)
     print(f"Loaded {len(y)} labeled pairs. positive rate = {pos/len(y):.3f}")
+    print(f"Unique groups (case_ids): {len(set(groups))}")
 
-    X_tr, y_tr, X_va, y_va = split(X, y)
+    X_tr, y_tr, X_va, y_va = split(X, y, groups=groups)
     print(f"Train: {len(y_tr)}  Val: {len(y_va)}")
 
     clf = LogisticRegression(
